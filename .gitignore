@@ -1,0 +1,4 @@
+maelstrom/
+**/store/
+*.log
+node-logs/
