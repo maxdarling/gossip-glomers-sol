@@ -3,62 +3,87 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"maps"
+	"slices"
+	"sync"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-
-
 func main() {
 	n := maelstrom.NewNode()
 
-	messages := make([]int, 0)
+	// STATE
+	var (
+		mu        sync.Mutex
+		values    = make(map[int]struct{})
+		neighbors = make([]string, 0)
+	)
 
 	// BROADCAST
 	n.Handle("broadcast", func(msg maelstrom.Message) error {
-		var body map[string]any
+		type BroadcastMsg struct {
+			Type string `json:"type"`
+			Val  int    `json:"message"`
+		}
+		var body BroadcastMsg
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
 
-
-
-
-		val := int(body["message"].(float64))
-		messages = append(messages, val)
+		// store and broadcast new values
+		mu.Lock()
+		if _, ok := values[body.Val]; !ok {
+			values[body.Val] = struct{}{}
+			for _, peerID := range neighbors {
+				n.Send(peerID, body)
+			}
+		}
+		mu.Unlock()
 
 		respBody := map[string]any{
-			"type" : "broadcast_ok",
+			"type": "broadcast_ok",
 		}
 		return n.Reply(msg, respBody)
 	})
 
+	// BROADCAST_OK (ignore responses from neighbors)
+	n.Handle("broadcast_ok", func(msg maelstrom.Message) error {
+		return nil
+	})
+
 	// READ
 	n.Handle("read", func(msg maelstrom.Message) error {
-		var body map[string]any
-		if err := json.Unmarshal(msg.Body, &body); err != nil {
-			return err
-		}
+		mu.Lock()
+		keys := slices.Collect(maps.Keys(values))
+		mu.Unlock()
 
 		respBody := map[string]any{
-			"type" : "read_ok",
-			"messages" : messages,
+			"type":     "read_ok",
+			"messages": keys,
 		}
 		return n.Reply(msg, respBody)
 	})
 
 	// TOPOLOGY
 	n.Handle("topology", func(msg maelstrom.Message) error {
-		var body map[string]any
+		type TopologyMsg struct {
+			Type     string              `json:"type"`
+			Topology map[string][]string `json:"topology"`
+		}
+
+		var body TopologyMsg
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
 
-		// todo: do topology stuff
-		// ...
+		topology := body.Topology
+		mu.Lock()
+		neighbors = topology[n.ID()]
+		mu.Unlock()
 
 		respBody := map[string]any{
-			"type" : "topology_ok",
+			"type": "topology_ok",
 		}
 		return n.Reply(msg, respBody)
 	})
